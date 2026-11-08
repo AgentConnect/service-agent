@@ -102,6 +102,7 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
     app = createServiceAgent({
       origin,
       services,
+      websiteOrigin: "https://website.test",
       anp: new AnpVerifier(publicDidResolver(tls.fetcher())),
       pap: new PapSessionVerifier(tls.fetcher(), origin),
       mcp: new TokenVerifier(tls.fetcher(), {
@@ -203,15 +204,20 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
         kid: "oauth",
       })
       .sign(oauth.privateKey);
-    const pap = async (path: string, message?: object) => {
+    const pap = async (
+      path: string,
+      message?: object,
+      sid = "website-session",
+      sub = "pairwise-user",
+    ) => {
       const method = message ? "POST" : "GET";
       const proof = await new SignJWT({
         iss: clientId,
         aud: origin,
-        sid: "website-session",
-        sub: "pairwise-user",
+        sid,
+        sub,
         htm: method,
-        htu: origin + path,
+        htu: origin + path.split("?")[0],
         iat: now,
         jti: randomUUID(),
       })
@@ -306,11 +312,153 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
         .rows[0].count,
       3,
     );
+    // Posts are separate from the existing private message inbox.
+    assert.equal(
+      JSON.parse((await tls.http(origin + "/api/posts")).body).total,
+      0,
+    );
+    assert.equal((await tls.http(origin + "/anp/api/posts")).status, 401);
+    assert.equal((await tls.http(origin + "/pap/api/posts")).status, 400);
+    const html = '<script>alert("plain text")</script>';
+    const published = await anp("/anp/api/posts", { content: html });
+    assert.equal(published.status, 200, published.body);
+    assert.equal(JSON.parse(published.body).identity, did.didDocument.id);
+    assert.equal(
+      (await pap("/pap/api/posts", { content: "PAP post" })).status,
+      200,
+    );
+    const mcpPost = await mcp("post_create", { content: "MCP post" });
+    assert.equal(mcpPost.status, 200, mcpPost.body);
+    assert.equal(JSON.parse(mcpPost.body).result.isError, undefined);
+    for (const response of [
+      await anp("/anp/api/posts?page=1"),
+      await pap("/pap/api/posts?page=1"),
+    ]) {
+      assert.equal(response.status, 200, response.body);
+      const feed = JSON.parse(response.body);
+      assert.equal(feed.total, 3);
+      assert.equal(feed.posts.length, 3);
+      assert.equal(feed.posts[0].protocol, "mcp");
+      assert.equal(feed.posts[0].identity, clientId);
+      assert.equal(feed.posts[1].identity, clientId);
+      assert.equal(feed.posts[2].content, html);
+    }
+    const mcpFeed = await mcp("post_list", { page: 1 });
+    assert.equal(
+      JSON.parse(JSON.parse(mcpFeed.body).result.content[0].text).total,
+      3,
+    );
+    const api = JSON.parse((await anp("/anp/openapi.json")).body);
+    assert.equal(api.paths["/anp/api/posts"].get.operationId, "post_list");
+    assert.equal(api.paths["/anp/api/posts"].post.operationId, "post_create");
+    assert.equal((await anp("/anp/api/posts", { content: "  " })).status, 400);
+    assert.equal(
+      (await anp("/anp/api/posts", { content: "x".repeat(4001) })).status,
+      400,
+    );
+    for (const page of ["0", "-1", "1.5", "no", "1000001", "1&page=2"])
+      assert.equal(
+        (await tls.http(origin + "/api/posts?page=" + page)).status,
+        400,
+      );
+    const cors = await tls.http(
+      origin + "/api/posts",
+      undefined,
+      { origin: "https://website.test" },
+      "GET",
+    );
+    assert.equal(
+      cors.headers["access-control-allow-origin"],
+      "https://website.test",
+    );
+    const stranger = await tls.http(
+      origin + "/api/posts",
+      undefined,
+      { origin: "https://stranger.test" },
+      "GET",
+    );
+    assert.equal(stranger.headers["access-control-allow-origin"], undefined);
+
+    // The two MCP/PAP posts already consume the same client's daily quota.
+    const attempts = await Promise.allSettled(
+      Array.from({ length: 55 }, (_, index) =>
+        services.createPost(
+          { content: "Concurrent post " + index },
+          {
+            protocol: index % 2 ? "mcp" : "pap",
+            subject: clientId,
+          },
+        ),
+      ),
+    );
+    assert.equal(
+      attempts.filter((result) => result.status === "fulfilled").length,
+      48,
+    );
+    const limited = attempts.filter((result) => result.status === "rejected");
+    assert.equal(limited.length, 7);
+    for (const result of limited) {
+      assert.equal(result.reason.code, "daily_post_limit_reached");
+      assert.equal(result.reason.status, 429);
+    }
+    assert.equal(
+      (await pap("/pap/api/posts", { content: "Over quota" })).status,
+      429,
+    );
+    assert.equal(
+      (
+        await pap(
+          "/pap/api/posts",
+          { content: "New session cannot bypass quota" },
+          "another-session",
+          "another-user",
+        )
+      ).status,
+      429,
+    );
+    const mcpLimit = await mcp("post_create", { content: "Over quota" });
+    assert.match(
+      JSON.parse(mcpLimit.body).error.message,
+      /daily_post_limit_reached/,
+    );
+    const feed = JSON.parse((await tls.http(origin + "/api/posts")).body);
+    assert.equal(feed.page, 1);
+    assert.equal(feed.pageSize, 10);
+    assert.equal(feed.total, 51);
+    assert.equal(feed.posts.length, 10);
+    const second = JSON.parse(
+      (await tls.http(origin + "/api/posts?page=2")).body,
+    );
+    assert.equal(second.posts.length, 10);
+    assert.ok(
+      second.posts.every(
+        (post: { id: string }) =>
+          !feed.posts.some((first: { id: string }) => post.id === first.id),
+      ),
+    );
+    assert.deepEqual(
+      JSON.parse((await tls.http(origin + "/api/posts?page=100")).body).posts,
+      [],
+    );
+    // A prior day's posts do not consume today's allowance.
+    await pool.query(
+      "UPDATE website_post_daily_counts SET day = day - 1 WHERE subject = $1",
+      [clientId],
+    );
+    assert.equal(
+      (await pap("/pap/api/posts", { content: "Next UTC day allowance" }))
+        .status,
+      200,
+    );
     const reopened = await createWebsiteServices(catalog, pool);
     assert.equal(
       (await pool.query("SELECT count(*)::int AS count FROM website_messages"))
         .rows[0].count,
       3,
+    );
+    assert.equal(
+      ((await reopened.listPosts({})) as { total: number }).total,
+      52,
     );
     await assert.rejects(
       reopened.getProtocol({ version: "2.0", document: "white-paper" }),

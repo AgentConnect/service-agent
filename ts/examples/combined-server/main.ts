@@ -34,6 +34,7 @@ export async function startServiceAgent(
   const app = createServiceAgent({
     origin,
     services,
+    websiteOrigin: process.env.WEBSITE_ORIGIN ?? origin,
     anp: new AnpVerifier(publicDidResolver(fetcher)),
     pap: new PapSessionVerifier(fetcher, origin),
     mcp: new TokenVerifier(fetcher, {

@@ -15,6 +15,7 @@ export { AnpVerifier, publicDidResolver } from "../anp/index.js";
 export interface Caller {
   protocol: "anp" | "mcp" | "pap";
   subject: string;
+  publicIdentity?: string;
 }
 export interface ProtocolServices {
   listProtocols(args: Record<string, unknown>): Promise<unknown>;
@@ -23,6 +24,8 @@ export interface ProtocolServices {
     args: Record<string, unknown>,
     caller: Caller,
   ): Promise<unknown>;
+  createPost(args: Record<string, unknown>, caller: Caller): Promise<unknown>;
+  listPosts(args: Record<string, unknown>): Promise<unknown>;
 }
 const string = { type: "string" };
 const definitions = [
@@ -53,7 +56,30 @@ const definitions = [
     properties: { message: { type: "string", minLength: 1, maxLength: 4000 } },
     required: ["message"],
   },
+  {
+    name: "post_create",
+    method: "post",
+    path: "/posts",
+    description:
+      "Publish a public plain-text post as the authenticated identity (50 per UTC day)",
+    scope: "message.write",
+    properties: { content: { type: "string", minLength: 1, maxLength: 4000 } },
+    required: ["content"],
+  },
+  {
+    name: "post_list",
+    method: "get",
+    path: "/posts",
+    description:
+      "Read latest public posts, newest first, with identity, protocol and timestamp",
+    scope: "protocol.read",
+    properties: { page: { type: "integer", minimum: 1, maximum: 1000000 } },
+    required: [] as string[],
+  },
 ] as const;
+const postListDefinition = definitions.find(
+  (definition) => definition.name === "post_list",
+)!;
 function argumentsFor(
   definition: (typeof definitions)[number],
   value: unknown,
@@ -61,6 +87,18 @@ function argumentsFor(
   if (!value || typeof value !== "object" || Array.isArray(value))
     fail("invalid_arguments");
   const args = value as Record<string, unknown>;
+  if (definition.name === "post_list") {
+    if (Object.keys(args).some((key) => key !== "page"))
+      fail("invalid_arguments");
+    const page = args.page ?? 1;
+    if (
+      (typeof page !== "number" && typeof page !== "string") ||
+      !/^[1-9][0-9]*$/.test(String(page)) ||
+      Number(page) > 1000000
+    )
+      fail("invalid_arguments");
+    return { page: Number(page) };
+  }
   if (
     Object.keys(args).some((key) => !(key in definition.properties)) ||
     definition.required.some(
@@ -117,65 +155,70 @@ export function serviceOpenApi(origin: string, protocol: "anp" | "pap") {
               },
             },
     },
-    paths: Object.fromEntries(
-      definitions.map((definition) => [
-        `/${protocol}/api${definition.path}`,
-        {
-          [definition.method]: {
-            operationId: definition.name,
-            description: definition.description,
-            security:
-              protocol === "anp"
-                ? [
-                    {
-                      anpSignatureInput: [],
-                      anpSignature: [],
-                      ...(definition.method === "post"
-                        ? { anpContentDigest: [] }
-                        : {}),
-                    },
-                  ]
-                : [{ poppySession: [] }],
-            ...(definition.method === "post"
-              ? {
-                  requestBody: {
-                    required: true,
-                    content: {
-                      "application/json": {
-                        schema: {
-                          type: "object",
-                          properties: definition.properties,
-                          required: definition.required,
-                          additionalProperties: false,
-                        },
+    paths: definitions.reduce<
+      Record<
+        string,
+        Record<string, { security: unknown; [key: string]: unknown }>
+      >
+    >((paths, definition) => {
+      const path = `/${protocol}/api${definition.path}`;
+      paths[path] = {
+        ...paths[path],
+        [definition.method]: {
+          operationId: definition.name,
+          description: definition.description,
+          security:
+            protocol === "anp"
+              ? [
+                  {
+                    anpSignatureInput: [],
+                    anpSignature: [],
+                    ...(definition.method === "post"
+                      ? { anpContentDigest: [] }
+                      : {}),
+                  },
+                ]
+              : [{ poppySession: [] }],
+          ...(definition.method === "post"
+            ? {
+                requestBody: {
+                  required: true,
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        properties: definition.properties,
+                        required: definition.required,
+                        additionalProperties: false,
                       },
                     },
                   },
-                }
-              : {
-                  parameters: Object.entries(definition.properties).map(
-                    ([name, schema]) => ({
-                      name,
-                      in: definition.path.includes(`{${name}}`)
-                        ? "path"
-                        : "query",
-                      required: definition.required.some(
-                        (value) => value === name,
-                      ),
-                      schema,
-                    }),
-                  ),
-                }),
-            responses: {
-              "200": {
-                description: "Operation completed",
-                content: { "application/json": { schema: { type: "object" } } },
-              },
+                },
+              }
+            : {
+                parameters: Object.entries(definition.properties).map(
+                  ([name, schema]) => ({
+                    name,
+                    in: definition.path.includes(`{${name}}`)
+                      ? "path"
+                      : "query",
+                    required: definition.required.some(
+                      (value) => value === name,
+                    ),
+                    schema,
+                  }),
+                ),
+              }),
+          responses: {
+            "200": {
+              description: "Operation completed",
+              content: { "application/json": { schema: { type: "object" } } },
             },
           },
         },
-      ]),
-    ),
+      };
+      return paths;
+    }, {}),
   };
 }
 export function createServiceAgent(options: {
@@ -185,6 +228,7 @@ export function createServiceAgent(options: {
   pap: PapSessionVerifier;
   mcp: TokenVerifier;
   authorizationServer?: Express;
+  websiteOrigin?: string;
 }) {
   const { origin, services } = options;
   if (
@@ -209,8 +253,22 @@ export function createServiceAgent(options: {
     if (definition.name === "protocol_list")
       return services.listProtocols(args);
     if (definition.name === "protocol_get") return services.getProtocol(args);
+    if (definition.name === "post_create")
+      return services.createPost(args, caller);
+    if (definition.name === "post_list") return services.listPosts(args);
     return services.createMessage(args, caller);
   };
+  // The website feed is public; publishing always uses protocol authentication.
+  app.get("/api/posts", async (req, res) => {
+    if (options.websiteOrigin && req.get("origin") === options.websiteOrigin) {
+      res.set("Access-Control-Allow-Origin", options.websiteOrigin);
+    }
+    res.vary("Origin");
+    res.set("Cache-Control", "no-store");
+    res.json(
+      await services.listPosts(argumentsFor(postListDefinition, req.query)),
+    );
+  });
   app.get("/.well-known/agent-descriptions", (_req, res) =>
     res.type("application/ld+json").json({
       "@context": {
@@ -279,7 +337,12 @@ export function createServiceAgent(options: {
       req.method,
       origin + req.originalUrl,
     );
-    return { protocol, subject: result.clientId + ":" + result.sub };
+    // The public client identity owns the quota, not a freely chosen Session sub.
+    return {
+      protocol,
+      subject: result.clientId + ":" + result.sub,
+      publicIdentity: result.clientId,
+    };
   };
   app.get("/agents/official/ad.json", async (req, res) => {
     await authenticate(req, "anp");
@@ -289,7 +352,8 @@ export function createServiceAgent(options: {
       type: "AgentDescription",
       name: "ANP Official Website",
       url: origin + "/agents/official/ad.json",
-      description: "Read published ANP specifications and leave a message.",
+      description:
+        "Read ANP specifications, publish public posts and read the latest posts.",
       securityDefinitions: {
         didwba: {
           scheme: "didwba",

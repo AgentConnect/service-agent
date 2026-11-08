@@ -220,19 +220,17 @@ export async function nativeWebsiteRoundTrip() {
       path: { version: "1.1", document: "white-paper" },
     });
     assert.equal(document.content.content, expectedContent);
-    const missingVersion = await tools
-      .get("anp_call")
-      .execute(
-        {
-          operationRef: operation("protocol_get"),
-          path: { version: "9.9", document: "white-paper" },
-        },
-        { agent: {} },
-      );
+    const missingVersion = await tools.get("anp_call").execute(
+      {
+        operationRef: operation("protocol_get"),
+        path: { version: "9.9", document: "white-paper" },
+      },
+      { agent: {} },
+    );
     assert.equal(missingVersion.ok, false);
     const receipt = await invoke("anp_call", {
-      operationRef: operation("message_create"),
-      body: { message: "native ANP" },
+      operationRef: operation("post_create"),
+      body: { content: "native ANP" },
     });
     assert.ok(receipt.content.id);
     const grant = (await fixture.management.grants(fixture.reference)).find(
@@ -244,8 +242,8 @@ export async function nativeWebsiteRoundTrip() {
     });
     const revoked = await tools.get("anp_call").execute(
       {
-        operationRef: operation("message_create"),
-        body: { message: "revoked ANP" },
+        operationRef: operation("post_create"),
+        body: { content: "revoked ANP" },
       },
       { agent: {} },
     );
@@ -253,7 +251,7 @@ export async function nativeWebsiteRoundTrip() {
     assert.equal(
       (
         await pool.query(
-          "SELECT count(*)::int AS count FROM website_messages WHERE content='revoked ANP'",
+          "SELECT count(*)::int AS count FROM website_posts WHERE content='revoked ANP'",
         )
       ).rows[0].count,
       0,
@@ -292,10 +290,10 @@ export async function nativeWebsiteRoundTrip() {
       expectedContent,
     );
     const papReceipt = await pap.dispatchPap(session.sessionRef, {
-      url: origin + "/pap/api/messages",
+      url: origin + "/pap/api/posts",
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: Buffer.from(JSON.stringify({ message: "native PAP" })),
+      body: Buffer.from(JSON.stringify({ content: "native PAP" })),
     });
     assert.equal(papReceipt.status, 200);
     const discovery = await tls.http(
@@ -362,10 +360,26 @@ export async function nativeWebsiteRoundTrip() {
       JSON.parse(JSON.parse(mcpDoc.body).result.content[0].text).content,
       expectedContent,
     );
-    const mcpReceipt = await call("message_create", { message: "native MCP" });
+    const mcpReceipt = await call("post_create", { content: "native MCP" });
     assert.equal(mcpReceipt.status, 200);
+    const publicFeed = JSON.parse((await tls.http(origin + "/api/posts")).body);
+    assert.equal(publicFeed.total, 3);
+    assert.deepEqual(
+      new Set(publicFeed.posts.map((post: any) => post.protocol)),
+      new Set(["anp", "mcp", "pap"]),
+    );
+    const mcpFeed = await call("post_list", { page: 1 });
+    assert.equal(
+      JSON.parse(JSON.parse(mcpFeed.body).result.content[0].text).total,
+      3,
+    );
+    const papFeed = await pap.dispatchPap(session.sessionRef, {
+      url: origin + "/pap/api/posts?page=1",
+    });
+    assert.equal(papFeed.status, 200);
+    assert.equal(JSON.parse(Buffer.from(papFeed.body).toString()).total, 3);
     const saved = await pool.query(
-      "SELECT protocol FROM website_messages WHERE content IN ('native ANP', 'native PAP', 'native MCP') ORDER BY protocol",
+      "SELECT protocol FROM website_posts WHERE content IN ('native ANP', 'native PAP', 'native MCP') ORDER BY protocol",
     );
     assert.deepEqual(
       saved.rows.map((row) => row.protocol),

@@ -64,9 +64,85 @@ export async function createWebsiteServices(
     id uuid PRIMARY KEY, protocol text NOT NULL, subject text NOT NULL,
     content text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
   )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS website_posts (
+    id uuid PRIMARY KEY, protocol text NOT NULL, subject text NOT NULL,
+    content text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+  )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS website_posts_latest
+    ON website_posts (created_at DESC, id DESC)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS website_post_daily_counts (
+    subject text NOT NULL, day date NOT NULL, count integer NOT NULL,
+    PRIMARY KEY (subject, day), CHECK (count BETWEEN 1 AND 50)
+  )`);
   const language = (args: Record<string, unknown>) =>
     String(args.language ?? "en");
   return {
+    async createPost(args, caller) {
+      if (
+        typeof args.content !== "string" ||
+        !args.content.trim() ||
+        args.content.length > 4000
+      )
+        fail("invalid_arguments");
+      const identity = caller.publicIdentity ?? caller.subject;
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // The upsert locks this identity/day even across concurrent workers.
+        const quota = await client.query(
+          `INSERT INTO website_post_daily_counts (subject, day, count)
+          VALUES ($1, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date, 1)
+          ON CONFLICT (subject, day) DO UPDATE SET count = website_post_daily_counts.count + 1
+          WHERE website_post_daily_counts.count < 50 RETURNING count`,
+          [identity],
+        );
+        if (!quota.rowCount) fail("daily_post_limit_reached", 429);
+        const result = await client.query(
+          `INSERT INTO website_posts (id, protocol, subject, content)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, protocol, subject AS identity, content, created_at AS "createdAt"`,
+          [
+            randomUUID(),
+            caller.protocol,
+            identity,
+            String(args.content).trim(),
+          ],
+        );
+        await client.query("COMMIT");
+        return result.rows[0];
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+    async listPosts(args) {
+      const page = args.page ?? 1;
+      if (
+        typeof page !== "number" ||
+        !Number.isSafeInteger(page) ||
+        page < 1 ||
+        page > 1000000
+      )
+        fail("invalid_arguments");
+      const result = await pool.query(
+        `SELECT
+        (SELECT count(*)::int FROM website_posts) AS total,
+        COALESCE((SELECT jsonb_agg(post ORDER BY post."createdAt" DESC, post.id DESC) FROM (
+          SELECT id, protocol, subject AS identity, content, created_at AS "createdAt"
+          FROM website_posts ORDER BY created_at DESC, id DESC LIMIT 10 OFFSET $1
+        ) post), '[]'::jsonb) AS posts`,
+        [(Number(page) - 1) * 10],
+      );
+      return {
+        ...result.rows[0],
+        page,
+        pageSize: 10,
+        dailyLimit: 50,
+        dayTimezone: "UTC",
+      };
+    },
     async listProtocols(args) {
       const documents = catalog.filter(
         (doc) =>
