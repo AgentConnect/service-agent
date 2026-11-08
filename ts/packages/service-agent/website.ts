@@ -81,7 +81,7 @@ export async function createWebsiteServices(
       if (
         typeof args.content !== "string" ||
         !args.content.trim() ||
-        args.content.length > 4000
+        Array.from(args.content).length > 1024
       )
         fail("invalid_arguments");
       const identity = caller.publicIdentity ?? caller.subject;

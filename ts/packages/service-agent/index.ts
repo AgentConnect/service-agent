@@ -63,7 +63,7 @@ const definitions = [
     description:
       "Publish a public plain-text post as the authenticated identity (50 per UTC day)",
     scope: "message.write",
-    properties: { content: { type: "string", minLength: 1, maxLength: 4000 } },
+    properties: { content: { type: "string", minLength: 1, maxLength: 1024 } },
     required: ["content"],
   },
   {

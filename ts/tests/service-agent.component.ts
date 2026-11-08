@@ -353,7 +353,7 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
     assert.equal(api.paths["/anp/api/posts"].post.operationId, "post_create");
     assert.equal((await anp("/anp/api/posts", { content: "  " })).status, 400);
     assert.equal(
-      (await anp("/anp/api/posts", { content: "x".repeat(4001) })).status,
+      (await anp("/anp/api/posts", { content: "x".repeat(1025) })).status,
       400,
     );
     for (const page of ["0", "-1", "1.5", "no", "1000001", "1&page=2"])
@@ -460,6 +460,32 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
       ((await reopened.listPosts({})) as { total: number }).total,
       52,
     );
+    assert.equal(
+      api.paths["/anp/api/posts"].post.requestBody.content["application/json"]
+        .schema.properties.content.maxLength,
+      1024,
+    );
+    for (const content of ["x", "中".repeat(1024), "😀".repeat(1024)]) {
+      const response = await anp("/anp/api/posts", { content });
+      assert.equal(response.status, 200, response.body);
+      assert.equal(JSON.parse(response.body).content, content);
+      assert.equal((await pap("/pap/api/posts", { content })).status, 200);
+      const mcpResponse = await mcp("post_create", { content });
+      assert.equal(
+        JSON.parse(JSON.parse(mcpResponse.body).result.content[0].text).content,
+        content,
+      );
+    }
+    assert.equal(
+      (await anp("/anp/api/posts", { content: "😀".repeat(1025) })).status,
+      400,
+    );
+    assert.equal(
+      (await pap("/pap/api/posts", { content: "中".repeat(1025) })).status,
+      400,
+    );
+    const tooLong = await mcp("post_create", { content: "x".repeat(1025) });
+    assert.ok(JSON.parse(tooLong.body).error);
     await assert.rejects(
       reopened.getProtocol({ version: "2.0", document: "white-paper" }),
     );

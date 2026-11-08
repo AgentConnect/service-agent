@@ -42,3 +42,10 @@ issuance or cross-protocol binding is outside this sample's scope.
 No production deployment or hosted CI is claimed. DSH/App UI behavior is unchanged;
 the focused native protocol System suite covers the changed integration rather
 than running unrelated product E2E. The standalone website UI was checked locally.
+
+## Length limit update
+
+Public post content is limited to 1–1,024 Unicode code points; the old private
+message limit is unchanged. The component case accepts one character and 1,024
+Chinese/emoji characters through ANP/PAP/MCP and rejects 1,025 characters. API
+input schemas advertise the same 1,024 maximum.

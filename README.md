@@ -16,6 +16,7 @@ MCP 机器模式下，未知客户端只有通过运营者显式配置的有界 
 
 The shared website service exposes `post_create` and `post_list` for ANP, MCP and
 PAP, alongside the existing protocol-document and private-message operations.
+Post content must contain 1–1,024 Unicode characters.
 Publish `{ "content": "Hello ANP" }` through `POST /anp/api/posts`,
 `POST /pap/api/posts`, or the MCP `post_create` tool (`message.write`). Read with
 `GET /anp/api/posts?page=1`, `GET /pap/api/posts?page=1`, or `post_list`
