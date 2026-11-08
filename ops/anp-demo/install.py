@@ -19,6 +19,7 @@ TEMPLATES = Path(__file__).resolve().parent
 
 
 def run(*argv, **kwargs):
+    kwargs.setdefault('cwd', '/')
     return subprocess.run(argv, check=True, text=True, **kwargs)
 
 
