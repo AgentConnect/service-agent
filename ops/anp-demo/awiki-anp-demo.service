@@ -1,0 +1,23 @@
+[Unit]
+Description=ANP demo Service Agent
+After=network-online.target awiki-anp-postgres.service
+Requires=awiki-anp-postgres.service
+
+[Service]
+Type=simple
+User=awiki_anp_demo
+Group=awiki_anp_access
+WorkingDirectory=/var/lib/awiki-anp-demo/current
+EnvironmentFile=/etc/awiki-anp-demo/runtime.env
+ExecStart=/var/lib/awiki-anp-demo/current/node ts/dist/examples/combined-server/cli.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
