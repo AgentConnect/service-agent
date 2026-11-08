@@ -6,6 +6,7 @@ import {
   DidProfile,
 } from "@awiki/anp-typescript-sdk";
 import { AnpVerifier } from "../packages/anp/index.js";
+import { serviceOpenApi } from "../packages/service-agent/index.js";
 
 const identity = createDidWbaDocument("identity.example", {
   pathSegments: ["agents", "test"],
@@ -24,6 +25,22 @@ const sign = (target = url, payload = body, components?: string[]) =>
     components ? { coveredComponents: components } : {},
   );
 const verifier = () => new AnpVerifier(async () => identity.didDocument);
+
+test("ANP OpenAPI advertises both signature headers and the body digest for writes", () => {
+  const api = serviceOpenApi("https://service.example", "anp");
+  const schemes = api.components.securitySchemes;
+  assert.equal(schemes.anpSignatureInput?.name, "Signature-Input");
+  assert.equal(schemes.anpSignature?.name, "Signature");
+  assert.equal(schemes.anpContentDigest?.name, "Content-Digest");
+  const read = api.paths["/anp/api/protocols"]!.get!;
+  const write = api.paths["/anp/api/messages"]!.post!;
+  assert.deepEqual(read.security, [
+    { anpSignatureInput: [], anpSignature: [] },
+  ]);
+  assert.deepEqual(write.security, [
+    { anpSignatureInput: [], anpSignature: [], anpContentDigest: [] },
+  ]);
+});
 
 test("ANP authenticates an E1 client without a server DID or token key", async () => {
   assert.deepEqual(await verifier().verify("POST", url, sign(), body), {

@@ -81,6 +81,42 @@ export function serviceOpenApi(origin: string, protocol: "anp" | "pap") {
     openapi: "3.1.0",
     info: { title: "Service Agent", version: "0.1.0" },
     servers: [{ url: origin }],
+    components: {
+      securitySchemes:
+        protocol === "anp"
+          ? {
+              anpSignatureInput: {
+                type: "apiKey",
+                in: "header",
+                name: "Signature-Input",
+                description:
+                  "ANP-02 RFC 9421 signature parameters with a did:wba authentication keyid, created, expires and a fresh nonce.",
+              },
+              anpSignature: {
+                type: "apiKey",
+                in: "header",
+                name: "Signature",
+                description:
+                  "Generated per request by the ANP client's local DID signer; covers the actual method, target URI and body digest when present.",
+              },
+              anpContentDigest: {
+                type: "apiKey",
+                in: "header",
+                name: "Content-Digest",
+                description:
+                  "RFC 9530 SHA-256 digest of the request body, included in the signed components.",
+              },
+            }
+          : {
+              poppySession: {
+                type: "apiKey",
+                in: "header",
+                name: "Poppy-Session",
+                description:
+                  "PAP 0.3 signed-out Session proof generated for this request.",
+              },
+            },
+    },
     paths: Object.fromEntries(
       definitions.map((definition) => [
         `/${protocol}/api${definition.path}`,
@@ -88,6 +124,18 @@ export function serviceOpenApi(origin: string, protocol: "anp" | "pap") {
           [definition.method]: {
             operationId: definition.name,
             description: definition.description,
+            security:
+              protocol === "anp"
+                ? [
+                    {
+                      anpSignatureInput: [],
+                      anpSignature: [],
+                      ...(definition.method === "post"
+                        ? { anpContentDigest: [] }
+                        : {}),
+                    },
+                  ]
+                : [{ poppySession: [] }],
             ...(definition.method === "post"
               ? {
                   requestBody: {
@@ -164,9 +212,10 @@ export function createServiceAgent(options: {
     return services.createMessage(args, caller);
   };
   app.get("/.well-known/agent-descriptions", (_req, res) =>
-    res.json({
+    res.type("application/ld+json").json({
       "@context": {
         "@vocab": "https://schema.org/",
+        did: "https://w3id.org/did#",
         ad: "https://agent-network-protocol.com/ad#",
       },
       "@type": "CollectionPage",
@@ -242,7 +291,13 @@ export function createServiceAgent(options: {
       url: origin + "/agents/official/ad.json",
       description: "Read published ANP specifications and leave a message.",
       securityDefinitions: {
-        didwba: { scheme: "didwba", in: "header", name: "Signature" },
+        didwba: {
+          scheme: "didwba",
+          in: "header",
+          name: "Signature",
+          description:
+            "ANP-02 HTTP Message Signatures using did:wba. Send Signature-Input and Signature; requests with a body also require a signed Content-Digest. Each request uses a fresh nonce.",
+        },
       },
       security: "didwba",
       Infomations: [
@@ -256,6 +311,9 @@ export function createServiceAgent(options: {
         {
           type: "StructuredInterface",
           protocol: "OpenAPI",
+          version: "3.1.0",
+          description:
+            "Read exact published protocol versions and submit a text message using ANP-authenticated HTTP requests.",
           url: origin + "/anp/openapi.json",
         },
       ],
@@ -323,10 +381,18 @@ export function createServiceAgent(options: {
       (e.status === 401 && req.path.startsWith("/anp/")) ||
       (e.status === 401 && req.path === "/agents/official/ad.json")
     ) {
-      res.set("WWW-Authenticate", 'DIDWba error="invalid_signature"');
+      res.set(
+        "WWW-Authenticate",
+        `DIDWba realm="${new URL(origin).host}", error="invalid_signature"`,
+      );
+      const components = [
+        "@method",
+        "@target-uri",
+        ...(Buffer.isBuffer(req.body) ? ["content-digest"] : []),
+      ];
       res.set(
         "Accept-Signature",
-        'sig1=("@method" "@target-uri");created;expires;nonce;keyid',
+        `sig1=(${components.map((value) => `"${value}"`).join(" ")});created;expires;nonce;keyid`,
       );
     }
     res.status(e.status).json({ error: e.code });

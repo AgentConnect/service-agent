@@ -1,0 +1,23 @@
+[Unit]
+Description=Independent ANP demo PostgreSQL
+After=network.target
+
+[Service]
+Type=simple
+User=awiki_anp_pg
+Group=awiki_anp_access
+RuntimeDirectory=awiki-anp-postgres
+RuntimeDirectoryMode=0750
+ExecStart=/usr/lib/postgresql/14/bin/postgres -D /var/lib/awiki-anp-demo/postgres/data
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/awiki-anp-demo/postgres
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
