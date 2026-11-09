@@ -278,7 +278,95 @@ test("one HTTPS service serves ANP, PAP and CIMD OAuth MCP with persisted messag
       { "content-type": "application/x-www-form-urlencoded" },
     );
     assert.equal(tokenResponse.status, 200, tokenResponse.body);
+
+    const listTools = async (accessToken: string) =>
+      tls.http(
+        origin + "/mcp",
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/list",
+          params: {},
+        }),
+        {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer " + accessToken,
+        },
+      );
     const token = JSON.parse(tokenResponse.body).access_token;
+    const writableTools = await listTools(token);
+    assert.equal(writableTools.status, 200);
+    assert.deepEqual(
+      JSON.parse(writableTools.body)
+        .result.tools.map((tool: { name: string }) => tool.name)
+        .sort(),
+      [
+        "message_create",
+        "post_create",
+        "post_list",
+        "protocol_get",
+        "protocol_list",
+      ],
+    );
+    const readAssertion = await new SignJWT({})
+      .setProtectedHeader({ alg: "ES256", kid: "oauth" })
+      .setIssuer(clientId)
+      .setSubject(clientId)
+      .setAudience(origin)
+      .setIssuedAt()
+      .setExpirationTime("60s")
+      .setJti(randomUUID())
+      .sign(oauth.privateKey);
+    const readTokenResponse = await tls.http(
+      origin + "/oauth/token",
+      new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_assertion_type:
+          "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+        client_assertion: readAssertion,
+        resource: origin + "/mcp",
+        scope: "protocol.read",
+      }).toString(),
+      { "content-type": "application/x-www-form-urlencoded" },
+    );
+    assert.equal(readTokenResponse.status, 200);
+    const readToken = JSON.parse(readTokenResponse.body).access_token;
+    const readTools = await listTools(readToken);
+    assert.deepEqual(
+      JSON.parse(readTools.body)
+        .result.tools.map((tool: { name: string }) => tool.name)
+        .sort(),
+      ["post_list", "protocol_get", "protocol_list"],
+    );
+    const forbiddenWrite = await tls.http(
+      origin + "/mcp",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "post_create",
+          arguments: { content: "must not be written" },
+        },
+      }),
+      {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: "Bearer " + readToken,
+      },
+    );
+    assert.equal(forbiddenWrite.status, 403);
+    const papApi = JSON.parse(
+      (await tls.http(origin + "/pap/openapi.json")).body,
+    );
+    assert.equal(
+      papApi.paths["/pap/api/posts"].post.operationId,
+      "post_create",
+    );
+    assert.equal(papApi.paths["/pap/api/posts"].get.operationId, "post_list");
+
     const mcp = async (name: string, args: object) =>
       tls.http(
         origin + "/mcp",

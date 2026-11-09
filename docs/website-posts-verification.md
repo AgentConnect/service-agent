@@ -49,3 +49,35 @@ Public post content is limited to 1–1,024 Unicode code points; the old private
 message limit is unchanged. The component case accepts one character and 1,024
 Chinese/emoji characters through ANP/PAP/MCP and rejects 1,025 characters. API
 input schemas advertise the same 1,024 maximum.
+
+## Public protocol parity recheck — 2026-11-09
+
+The official HTTPS deployment advertises both PAP GET and POST `/pap/api/posts`.
+The MCP authorization/resource metadata advertises `protocol.read` and
+`message.write`. With a read-only token, `tools/list` returns exactly
+`protocol_list`, `protocol_get`, `post_list`; with both scopes it also returns
+`post_create` and `message_create`. The component regression now covers both
+lists and rejects a read-only `post_create` with HTTP 403.
+
+Fresh public HTTPS checks passed: a temporary resolvable identity published one
+post through each of ANP, PAP NoAS and MCP, and each protocol listed all three
+posts from the same store. All task-owned posts, quota rows, temporary OAuth
+client/token/material rows and public test keys were removed; audit retained.
+Existing users' posts were untouched. Evidence is in
+`.artifacts/protocol-parity-20261109/result.json` (12 checks, cleanup included).
+
+NoAS does not imply GET-only and does not require account login for a website
+post. PAP Agent tools expose only explicitly enabled operations; its management
+UI exposes the full discovered catalog. Refresh discovery if an old catalog is
+cached, then allow the POST operation on the selected no-account connection.
+
+For MCP, both the identity policy scope ceiling and connection requested scopes
+must allow `message.write`; reconnect through the normal lifecycle to acquire a
+matching token. An empty MCP resources list says nothing about tool write access.
+For ANP, the identity manager defaults to one-time approval; an explicit permanent
+approval can authorize the configured HTTP origin until revoked. The backend
+never requires a separate identity-manager approval for every post.
+
+This recheck does not modify the user's personal client/profile configuration;
+its address/profile path was not supplied. Production authentication, scope checks
+and explicit operation grants remain enforced. No backend deployment was needed.
